@@ -1,0 +1,12 @@
+*.zip
+
+# JetBrains IDE
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
