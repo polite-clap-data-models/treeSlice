@@ -44,20 +44,6 @@ def tree_hook(ingest: dict | str | pl.DataFrame | pl.LazyFrame, /) -> dict[str, 
         "mALPC":   lambda Δ: (cs.expand_selector(Δ, ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu | cs.by_name(cparent, cchild, cbkey, require_all=False))), len(cs.expand_selector(Δ, cs.by_name(cparent, cchild, cbkey, require_all=False))) == 3)
     }
 
-    # Δ, 囗, 〇, 十, 𒋬 = ("Δ", "囗", "〇", "十", "𒋬")
-    # print(_schema_hook["mSlim"](pl.read_parquet(example_mvp)))
-    # print(_schema_hook["mWide"](pl.read_parquet(example_mvp).pipe(expand_model, verify=10_000).collect()))
-
-    # return (
-    #     pl.read_parquet(ingest, rechunk=True, n_rows=n_rows)
-    #     if isinstance(ingest, str) and (n_rows or n_rows == 0) else
-    #     pl.read_parquet(ingest, rechunk=True)
-    #     if isinstance(ingest, str) else
-    #     ingest.collect()
-    #     if isinstance(ingest, pl.LazyFrame) else
-    #     ingest
-    # )
-
     return {kk: _schema_hook[kk](ingest) for kk in _schema_hook}
 
 
