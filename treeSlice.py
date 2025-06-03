@@ -1,3 +1,4 @@
+from json import loads
 import polars as pl
 import polars.selectors as cs
 import polars_hash as plh
@@ -6,6 +7,7 @@ chead, ctail, cdepth, cstart, cstop = "cHead", "cTail", "cDepth", "cStart", "cSt
 hk_ptr, hk_ptr_parent, hk_schema, hk_nspace, hk_kvp_treekey = "hkPTR", "hkPTR_alParent", "hkSchema", "hkNSpace", "hkKVP_TreeKey"
 csize, cwidth, cout = "cSize", "cWidth", "cOut"
 cleft, cright, cis_root, cis_leaf = "cLeft", "cRight", "cIsRoot", "cIsLeaf"
+cptr, cparent, cchild, cbkey = "cPTR", "cParent", "cChild", "cBKey"
 vis_open, vis_closed, vis_pipe, vis_void = (
     pl.lit(value=" ╠══➤ ", dtype=pl.String), pl.lit(value=" ╚══➤ ", dtype=pl.String),
     pl.lit(value=" ║   ", dtype=pl.String), pl.lit(value="  ", dtype=pl.String)
@@ -14,13 +16,49 @@ vis_open, vis_closed, vis_pipe, vis_void = (
 _sys_dtype = pl.DataFrame(schema={cstart: pl.UInt32}).schema[cstart]
 cs_ptr = cs.matches(pattern="^p\\d{3}_[1-9]\\d*$")
 cs_vis = cs.matches(pattern="^v\\d{3}_[1-9]\\d*$")
-cs_mini = cs.by_name(chead, ctail, cdepth, cstart, cstop, require_all=True)
+_core_12 = (chead, ctail, cdepth, cstart, cstop, csize, cwidth, cout, cleft, cright, cis_root, cis_leaf)
+cs_core_12 = cs.by_name(*_core_12, require_all=False)
 cs_hash = cs.by_name(hk_ptr, hk_ptr_parent, hk_schema, hk_nspace, hk_kvp_treekey, require_all=False)
-cs_from = cs.by_name(csize, cwidth, cout, cleft, cright, cis_root, cis_leaf, require_all=False)
 cs_uqu = (
     cs.starts_with("uq") &
-    cs.by_dtype(pl.Struct({"cIsLCA": pl.Boolean, "cIsUQE": pl.Boolean, "cPTR": pl.List(_sys_dtype)}))
+    cs.by_dtype(pl.Struct({"cIsLCA": pl.Boolean, "cIsUQE": pl.Boolean, cptr: pl.List(_sys_dtype)}))
 )
+
+
+def tree_hook(ingest: dict | str | pl.DataFrame | pl.LazyFrame, /) -> dict[str, bool]:
+
+    _schema_hook: dict = {
+        "isDICT":  lambda Δ: (None, isinstance(Δ, dict)),
+        "isJSON":  lambda Δ: (None, isinstance(Δ, str) and Δ.strip()[0] == "{" and Δ.strip()[-1] == "}" and isinstance(loads(Δ), dict)),  # json nested object
+
+        "isPLFL":  lambda Δ: (None, isinstance(Δ, str) and Δ[-8:] == ".parquet" and (True if pl.scan_parquet(Δ, n_rows=0).collect_schema() else False)),
+        "isPL":    lambda Δ: (None, isinstance(Δ, pl.DataFrame | pl.LazyFrame)),
+
+        "mWide":   lambda Δ: (cs.expand_selector(Δ, ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu)), len(cs.expand_selector(Δ, cs_core_12)) == 12 and len(cs.expand_selector(Δ, cs_ptr)) >= 1),  # previously FULL
+        "mI05":    lambda Δ: (cs.expand_selector(Δ, ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu)), len(cs.expand_selector(Δ, cs.by_name(chead, ctail, cdepth, cstart, cstop, require_all=False))) == 5),  # previously CS_MINI_05
+        "mSlim":   lambda Δ: (cs.expand_selector(Δ, ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu)), len(cs.expand_selector(Δ, cs.by_name(ctail, cdepth, require_all=False))) == 2),  # previously MVP
+
+        "mList":   lambda Δ: (cs.expand_selector(Δ, ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu | cs.by_name(cptr, require_all=False))), len(cs.expand_selector(Δ, cs.by_name(cptr, require_all=False))) == 1 and repr(Δ.lazy().collect_schema()[cptr])[:5] == "List("),
+        "mPTR":    lambda Δ: (cs.expand_selector(Δ, ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu)), len(cs.expand_selector(Δ, cs_ptr)) >= 1),
+
+        "mALPC":   lambda Δ: (cs.expand_selector(Δ, ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu | cs.by_name(cparent, cchild, cbkey, require_all=False))), len(cs.expand_selector(Δ, cs.by_name(cparent, cchild, cbkey, require_all=False))) == 3)
+    }
+
+    # Δ, 囗, 〇, 十, 𒋬 = ("Δ", "囗", "〇", "十", "𒋬")
+    # print(_schema_hook["mSlim"](pl.read_parquet(example_mvp)))
+    # print(_schema_hook["mWide"](pl.read_parquet(example_mvp).pipe(expand_model, verify=10_000).collect()))
+
+    # return (
+    #     pl.read_parquet(ingest, rechunk=True, n_rows=n_rows)
+    #     if isinstance(ingest, str) and (n_rows or n_rows == 0) else
+    #     pl.read_parquet(ingest, rechunk=True)
+    #     if isinstance(ingest, str) else
+    #     ingest.collect()
+    #     if isinstance(ingest, pl.LazyFrame) else
+    #     ingest
+    # )
+
+    return {kk: _schema_hook[kk](ingest) for kk in _schema_hook}
 
 
 def use_enums(ingest: pl.DataFrame, /, *, namespace_map: dict[str, str] = None) -> pl.DataFrame:
@@ -201,49 +239,7 @@ def gen_hash_keys(ingest: pl.DataFrame, /, *, as_uint64: bool = True) -> pl.Data
     ).collect()
 
 
-def flat_unpack_list(ingest: pl.DataFrame, /) -> pl.DataFrame:
-
-    first_column: str = cs.expand_selector(ingest, cs.first())[0]
-
-    if repr(ingest.schema[first_column])[:5] != "List(":
-        return ingest
-
-    # the first column is of type pl.List (the inner type is immaterial)
-    assert (
-        ingest
-        .lazy()
-        .select(
-            pl.col(first_column).is_null().alias("is_null"),
-            pl.col(first_column).list.len().alias("len"),
-            pl.col(first_column).list.drop_nulls().list.len().alias("no_nulls")
-        )
-        .filter(pl.col("is_null") | pl.col("len").eq(0) | pl.col("len").ne(pl.col("no_nulls")))
-        .head(1)
-        .collect()
-        .height == 0
-    ), "The list column cannot be null, contain any nulls, or be zero length"
-
-    ingest: pl.DataFrame = (
-        ingest
-        .drop(cs_ptr)
-        .with_columns(
-            pl.col(first_column).list.to_struct(
-                n_field_strategy="max_width",
-                fields=lambda depth: f"xWS{depth:03}"
-            ).alias("yWS")
-        )
-        .unnest(columns="yWS")
-        .drop(first_column)
-    )
-
-    going_from_leaves_up_to_the_roots: range = range(len(cs.expand_selector(ingest, cs.starts_with("xWS"))) - 1, - 1, - 1)
-    # going from leaves up(↑) to the roots [..., 3, 2, 1, 0] descending(↓) integers (cdepth)
-    return ingest.rename(
-        {f"xWS{ascent:03}": f"p{ascent:03}_{max(going_from_leaves_up_to_the_roots)}" for ascent in going_from_leaves_up_to_the_roots}
-    ).rechunk()
-
-
-def flat_reorg_ced(ingest: pl.DataFrame | pl.LazyFrame, /) -> pl.LazyFrame:
+def refine_model(ingest: pl.DataFrame | pl.LazyFrame, /) -> pl.LazyFrame:
     """
     Refines a DataFrame of tree paths by ensuring completeness and proper ordering.
     It deduplicates rows, co-locates sibling nodes under their shared parent, and
@@ -251,7 +247,7 @@ def flat_reorg_ced(ingest: pl.DataFrame | pl.LazyFrame, /) -> pl.LazyFrame:
     coherent, fully expanded hierarchy that accurately represents each node's position
     in the tree. Ideal for downstream processing or visualisation of hierarchical data.
     """
-    # flat_reorg_ced (co-locate, explode, dedupe)
+    # refine_model (co-locate, explode, dedupe)
 
     ptr_key_cols: tuple[str, ...] = tuple(sorted(cs.expand_selector(ingest, cs_ptr)))
     going_from_roots_down_to_the_leaves: range = range(len(ptr_key_cols))
@@ -314,7 +310,7 @@ def flat_reorg_ced(ingest: pl.DataFrame | pl.LazyFrame, /) -> pl.LazyFrame:
     return ingest
 
 
-def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten: bool = True) -> pl.LazyFrame:
+def expand_model(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_all: bool = False, verify: int | None = None) -> pl.LazyFrame:
     """
     Computes integer-based boundaries and other metrics for each node in a tree DataFrame.
     In addition to assigning left and right pointers for nested set style queries, this function
@@ -325,6 +321,7 @@ def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten
     """
     # previously called build_trees
     # previously called from_mvp_flat_to_full
+    # previously called to_full_from_mvp_flat
 
     going_from_roots_down_to_the_leaves: range = range(
         len(cs.expand_selector(ingest, cs_ptr)) if cs.expand_selector(ingest, cs_ptr)
@@ -354,6 +351,17 @@ def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten
     # ↓↓↓ from FLAT to FULL model
     ptr_key_cols: tuple[str, ...] = tuple(sorted(cs.expand_selector(ingest, cs_ptr)))
     assert ptr_key_cols and all(ptr_key_cols) and ptr_key_cols == tuple(cs.expand_selector(ingest, cs_ptr))
+    assert (not verify) or ingest.lazy().select(cs_ptr).head(verify).collect().height == (
+        ingest.lazy().select(cs_ptr).head(verify)
+        .filter(
+            ((cs_ptr & cs.first()).shift(1).is_null() & pl.sum_horizontal(cs_ptr.is_not_null()).eq(1)) |
+            pl.concat_list(cs_ptr).list.head(pl.sum_horizontal(cs_ptr.is_not_null()).sub(1))
+            .eq(pl.concat_list(cs_ptr).shift(1).list.head(pl.sum_horizontal(cs_ptr.is_not_null()).sub(1)))
+        )
+        .unique(keep="any", maintain_order=False)
+        .collect()
+        .height
+    ), "The verify parameter is set, but the DataFrame contains identical rows or rows not colocated correctly"
 
     #
     # Best Measured Performance with default parameters is ≈ 11.3M rows/sec. The system processes 100,000 rows
@@ -404,7 +412,7 @@ def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten
         for ascent in going_from_leaves_up_to_the_roots
     )
 
-    vis_shorten = pl.col(ctail).cast(dtype=pl.Utf8).str.strip_chars().str.slice(offset=0, length=9) if vis_shorten else pl.col(ctail).cast(dtype=pl.Utf8).str.strip_chars()
+    vis_all = pl.col(ctail).cast(dtype=pl.Utf8) if vis_all else pl.col(ctail).cast(dtype=pl.Utf8).str.strip_chars().str.slice(offset=0, length=9)
 
     build_cvis_b: tuple[pl.Expr, ...] = tuple((
         pl
@@ -417,7 +425,7 @@ def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten
             pl.when(pl.col(f"v{ascent:03}_{max(going_from_leaves_up_to_the_roots)}").eq(pl.col(f"v{ascent + 1:03}_{max(going_from_leaves_up_to_the_roots)}")))
             .then(vis_closed).otherwise(vis_open)
         )
-        .otherwise(vis_shorten)
+        .otherwise(vis_all)
         if ascent < max(going_from_leaves_up_to_the_roots) - 1 else
 
         pl
@@ -426,12 +434,12 @@ def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten
             pl.when(pl.col(f"v{ascent:03}_{max(going_from_leaves_up_to_the_roots)}").eq(pl.col(f"v{ascent + 1:03}_{max(going_from_leaves_up_to_the_roots)}")))
             .then(vis_closed).otherwise(vis_open)
         )
-        .otherwise(vis_shorten)
+        .otherwise(vis_all)
         if ascent < max(going_from_leaves_up_to_the_roots) else
 
         pl
         .when(pl.col(cdepth).lt(ascent)).then(vis_void)
-        .otherwise(vis_shorten)
+        .otherwise(vis_all)
 
     ).alias(f"v{ascent:03}_{max(going_from_leaves_up_to_the_roots)}") for ascent in going_from_leaves_up_to_the_roots)
 
@@ -463,10 +471,9 @@ def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten
             *build_cvis_a[::-1]
         )
         .with_columns(*build_cvis_b)
-        .select(chead, ctail, cdepth, cstart, cstop, ~cs_mini)
         .select(
-            cs_ptr, cs_vis, cs_mini, cs_from, cs_hash, cs_uqu,
-            ~(cs_ptr | cs_vis | cs_mini | cs_from | cs_hash | cs_uqu | cs.starts_with("xWS"))
+            cs_ptr, cs_vis, *_core_12, cs_hash, cs_uqu,
+            ~(cs_ptr | cs_vis | cs_core_12 | cs_hash | cs_uqu | cs.starts_with("xWS"))
         )
     )
     # ↑↑↑ from FLAT to FULL model
@@ -474,54 +481,89 @@ def to_full_from_mvp_flat(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_shorten
     return ingest
 
 
-def to_flat_from_alist(ingest: pl.DataFrame, /, *, max_depth: int = 100) -> pl.LazyFrame:
-    """
-    it is the ORDINAL POSITION of the values which is material (NOT the column names used)
-    0, 1: parent and child
-    2: the business key
-    *3: an arbitrary number of business values
-    """
+def from_mList(ingest: pl.DataFrame, /) -> pl.DataFrame:
 
-    alist_parent_sk, alist_child_sk, user_key, *user_val = ingest.columns
-    ingest: pl.DataFrame = ingest.rename({alist_parent_sk: alist_parent_sk + "_xWS", alist_child_sk: alist_child_sk + "_xWS", user_key: user_key + "_xWS"})
-    alist_parent_sk, alist_child_sk, user_key, *user_val = ingest.columns
+    assert tree_hook(ingest)["mList"][-1]
 
-    check_parent: pl.Series = ingest.get_column(alist_parent_sk)
-    assert ingest.height and ingest.height == ingest.get_column(alist_child_sk).unique().count()
-    assert ingest.filter(pl.col(alist_parent_sk).eq(pl.col(alist_child_sk))).height == 0
+    # the first column is of type pl.List (the inner type is immaterial)
+    assert (
+        ingest
+        .lazy()
+        .select(
+            pl.col(cptr).is_null().alias("is_null"),
+            pl.col(cptr).list.len().alias("len"),
+            pl.col(cptr).list.drop_nulls().list.len().alias("no_nulls")
+        )
+        .filter(pl.col("is_null") | pl.col("len").eq(0) | pl.col("len").ne(pl.col("no_nulls")))
+        .head(1)
+        .collect()
+        .height == 0
+    ), "The list column cannot be null, contain any nulls, or be zero length"
+
+    ingest: pl.DataFrame = (
+        ingest
+        .drop(cs_ptr)
+        .with_columns(
+            pl.col(cptr).list.to_struct(
+                n_field_strategy="max_width",
+                fields=lambda depth: f"xWS{depth:03}"
+            ).alias("yWS")
+        )
+        .unnest(columns="yWS")
+        .drop(cptr)
+    )
+
+    going_from_leaves_up_to_the_roots: range = range(len(cs.expand_selector(ingest, cs.starts_with("xWS"))) - 1, - 1, - 1)
+    # going from leaves up(↑) to the roots [..., 3, 2, 1, 0] descending(↓) integers (cdepth)
+    return ingest.rename(
+        {f"xWS{ascent:03}": f"p{ascent:03}_{max(going_from_leaves_up_to_the_roots)}" for ascent in going_from_leaves_up_to_the_roots}
+    ).rechunk()
+
+
+def from_mALPC(ingest: pl.DataFrame, /, *, max_depth: int = 100) -> pl.LazyFrame:
+    # from ALIST to FULL model
+    # previously called to_flat_from_alist
+
+    assert tree_hook(ingest)["mALPC"][-1]
+
+    user_val = cs.expand_selector(ingest, ~cs.by_name(cparent, cchild, cbkey, require_all=False))
+
+    check_parent: pl.Series = ingest.get_column(cparent)
+    assert ingest.height and ingest.height == ingest.get_column(cchild).unique().count()
+    assert ingest.filter(pl.col(cparent).eq(pl.col(cchild))).height == 0
     assert check_parent.filter(check_parent.is_null()).shape[0] > 0
     assert check_parent.filter(check_parent.is_not_null() & check_parent.is_duplicated()).shape[0] > 0
 
-    leaves_expr: pl.Expr = pl.col(alist_child_sk).is_in(
+    leaves_expr: pl.Expr = pl.col(cchild).is_in(
         check_parent.drop_nulls().unique().sort().implode().set_sorted(),
         nulls_equal=False
     ).not_()
     n_leaves, leaves = pl.collect_all((
-        ingest.lazy().filter(~leaves_expr).select(alist_child_sk, alist_parent_sk),
-        ingest.lazy().filter(leaves_expr).select(alist_child_sk, alist_parent_sk)
+        ingest.lazy().filter(~leaves_expr).select(cchild, cparent),
+        ingest.lazy().filter(leaves_expr).select(cchild, cparent)
     ))
     del check_parent, leaves_expr
 
     while leaves.select(cs.last().is_not_null().any()).to_series().item(0) and leaves.shape[-1] < max_depth:
         leaves: pl.DataFrame = (
             leaves.lazy()
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cs.expand_selector(leaves, cs.last())[-1],            right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+0:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+0:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+1:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+1:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+2:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+2:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+3:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+3:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+4:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+4:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+5:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+5:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+6:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+6:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+7:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+7:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+8:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+8:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+9:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+9:03}join",    right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+10:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+10:03}join",   right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+11:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+11:03}join",   right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+12:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+12:03}join",   right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+13:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+13:03}join",   right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+14:03}join")
-            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=alist_parent_sk + f"_{leaves.shape[-1]+14:03}join",   right_on=alist_child_sk, suffix=f"_{leaves.shape[-1]+15:03}join")
-            .select(alist_child_sk, cs.starts_with(alist_parent_sk))
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cs.expand_selector(leaves, cs.last())[-1],    right_on=cchild, suffix=f"_{leaves.shape[-1]+0:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+0:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+1:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+1:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+2:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+2:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+3:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+3:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+4:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+4:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+5:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+5:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+6:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+6:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+7:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+7:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+8:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+8:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+9:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+9:03}join",    right_on=cchild, suffix=f"_{leaves.shape[-1]+10:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+10:03}join",   right_on=cchild, suffix=f"_{leaves.shape[-1]+11:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+11:03}join",   right_on=cchild, suffix=f"_{leaves.shape[-1]+12:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+12:03}join",   right_on=cchild, suffix=f"_{leaves.shape[-1]+13:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+13:03}join",   right_on=cchild, suffix=f"_{leaves.shape[-1]+14:03}join")
+            .join(other=n_leaves.lazy(), how="left", nulls_equal=False, left_on=cparent + f"_{leaves.shape[-1]+14:03}join",   right_on=cchild, suffix=f"_{leaves.shape[-1]+15:03}join")
+            .select(cchild, cs.starts_with(cparent))
             .collect()
         )
 
@@ -552,12 +594,12 @@ def to_flat_from_alist(ingest: pl.DataFrame, /, *, max_depth: int = 100) -> pl.L
                 [f"p{qq:03}_{max(going_from_roots_down_to_the_leaves)}" for qq in going_from_roots_down_to_the_leaves],
             ).struct.unnest()
         )
-        .pipe(flat_reorg_ced)
+        .pipe(refine_model)
         .with_columns(pl.coalesce(pl.col([f"p{qq:03}_{max(going_from_leaves_up_to_the_roots)}" for qq in going_from_leaves_up_to_the_roots])).alias(uv) for uv in user_val[0:1])
         .with_columns(pl.col(user_val[0]).alias(uv) for uv in user_val)
         .with_columns(
-            [cs_ptr.replace_strict(old=ingest.get_column(alist_child_sk), new=ingest.get_column(user_key), default=None)] +
-            [pl.col(uv).replace_strict(old=ingest.get_column(alist_child_sk), new=ingest.get_column(uv), default=None).alias(uv) for uv in user_val]
+            [cs_ptr.replace_strict(old=ingest.get_column(cchild), new=ingest.get_column(cbkey), default=None)] +
+            [pl.col(uv).replace_strict(old=ingest.get_column(cchild), new=ingest.get_column(uv), default=None).alias(uv) for uv in user_val]
         )
     )
 
@@ -567,7 +609,7 @@ def to_flat_from_alist(ingest: pl.DataFrame, /, *, max_depth: int = 100) -> pl.L
 
 
 def test_equal(tree_x: pl.DataFrame, tree_y: pl.DataFrame, /) -> bool:
-    tree_x = tree_x.select(cs_mini)
+    tree_x = tree_x.select(chead, ctail, cdepth, cstart, cstop)
     tree_y = tree_y.select(tree_x.columns)
     if tree_x.equals(tree_y):
         return True
@@ -596,64 +638,84 @@ if __name__ == "__main__":
 
     from data_design import example_mvp, example_alist, unit_test_aa_mvp, unit_test_bb_mvp, unit_test_cc_mvp
 
-    with pl.Config(
-        thousands_separator="_", tbl_width_chars=1_200,
-        fmt_str_lengths=80, fmt_table_cell_list_len=20,
-        tbl_cols=200, tbl_rows=50
-    ):
+    import duckdb as db
 
-        # demonstration
+    # demonstration
 
-        assert pl.read_parquet(example_mvp).pipe(to_full_from_mvp_flat).collect().shape == (20, 22)
-        assert pl.read_parquet(unit_test_aa_mvp).pipe(to_full_from_mvp_flat).collect().shape == (52_529, 32)
-        assert pl.read_parquet(unit_test_bb_mvp).pipe(to_full_from_mvp_flat).collect().shape == (52_419, 32)
-        assert pl.read_parquet(unit_test_cc_mvp).pipe(to_full_from_mvp_flat).collect().shape == (49_246, 32)
+    assert pl.read_parquet(example_mvp).pipe(expand_model).collect().shape == (20, 22)
+    assert pl.read_parquet(unit_test_aa_mvp).pipe(expand_model).collect().shape == (52_529, 32)
+    assert pl.read_parquet(unit_test_bb_mvp).pipe(expand_model).collect().shape == (52_419, 32)
+    assert pl.read_parquet(unit_test_cc_mvp).pipe(expand_model).collect().shape == (49_246, 32)
 
-        print(pl.read_parquet(example_mvp))
-        print(
-            pl.read_parquet(example_mvp)
-            .pipe(to_full_from_mvp_flat).collect()
-            .pipe(gen_hash_keys, as_uint64=False)
-            .select(~cs_ptr)
+    p_sep = 'parent> <child'
+    for this_df, this_node in [
+        [example_mvp, "E"],
+        [unit_test_cc_mvp, {"type": 99, "obj": "kX"}]
+    ]:
+        print(f"\n\n\nSQL Queries for: {this_df=}  {this_node=}  {type(this_node)=}", end="")
+        this_df: pl.DataFrame = pl.read_parquet(this_df).select(~(cs.starts_with("user_value") | cs.by_name("BLOCK_ID"))).head(50).pipe(expand_model).collect()
+        print(f"  {this_df.schema[ctail]=}")
+
+        query0 = f"""SELECT * FROM this_df;"""
+        assert db.sql(query0).pl().equals(
+            this_df
         )
+        # show base data; test against equivalent Polars DF
+        db.sql(query0).show(max_rows=50, max_width=5_000)
 
-        print(pl.read_parquet(example_alist))
-        assert pl.read_parquet(example_mvp).pipe(to_full_from_mvp_flat).collect().equals(
-            pl.read_parquet(example_alist).pipe(to_flat_from_alist).pipe(to_full_from_mvp_flat).collect()
+        query1 = f"""SELECT * FROM this_df WHERE {ctail}={repr(this_node)};"""
+        assert db.sql(query1).pl().equals(
+            this_df.lazy().filter(pl.col(ctail).eq(this_node)).collect()
         )
+        # get all; test against equivalent Polars DF
+        db.sql(query1).show(max_rows=50, max_width=5_000)
 
-        # demonstration - to_flat_from_alist
-
-        unit_test_output: pl.DataFrame = (
-            pl.scan_parquet(unit_test_cc_mvp)
-            .pipe(to_full_from_mvp_flat)
-            .with_columns(pl.col(cstart).alias("user_value1"), pl.col(cstop).alias("user_value2"))
-            .collect().rechunk()
-        )
-
-        ptr_key_cols: tuple[str, ...] = tuple(sorted(cs.expand_selector(unit_test_output, cs_ptr)))
-
-        unit_test_input: pl.DataFrame = (
-            pl.concat(how="horizontal", items=[unit_test_output,
-                unit_test_output.lazy()
-                .select(
-                    pl.when(pl.col(cdepth).ne(lvl)).then(pl.col(ptr_key_cols[lvl])).alias(ptr_key_cols[lvl])
-                    for lvl in range(len(ptr_key_cols))
-                )
-                .join(
-                    on=ptr_key_cols, how="left", nulls_equal=True,
-                    other=unit_test_output.lazy().filter(~pl.col(cis_leaf))
-                )
-                .select(pl.col(cstart).alias("Parent"))
-                .collect()
-            ])
-            .select(
-                pl.col("Parent"), pl.col(cstart).alias("Child"),
-                pl.col(ctail).alias("BKEY"), cs.starts_with("user_value")
+        query2 = f"""
+        SELECT P.{cleft} AS P_{cleft}, P.{cright} AS P_{cright}, {repr(p_sep)} AS 'P_SEP', c.*
+        FROM this_df AS P, this_df AS C
+        WHERE c.{cleft} BETWEEN P.{cleft} AND P.{cright} AND P.{ctail}={repr(this_node)}
+        ORDER BY P.{cleft} ASC, c.{cleft} ASC;
+        """
+        assert db.sql(query2).pl().equals(
+            this_df.lazy()
+            .filter(pl.col(ctail).eq(this_node))
+            .select(pl.col(cleft, cright).name.prefix("P_"), pl.lit(p_sep).alias("P_SEP"))
+            .set_sorted("P_" + cleft)
+            .join_where(
+                this_df.lazy().set_sorted(cleft),
+                pl.col(cleft) >= pl.col("P_" + cleft),
+                pl.col(cleft) < pl.col("P_" + cright)
             )
+            .sort("P_" + cleft, cleft)
+            .collect()
         )
+        assert db.sql(query2).pl().equals(
+            pl.concat(items=(
+                this_df.slice(offset=Δ, length=囗)
+                .select(
+                    pl.when(pl.col(cstart).eq(Δ)).then(pl.col(cleft, cright)).otherwise(None)
+                    .fill_null(strategy="forward").name.prefix("P_"),
+                    pl.lit(p_sep).alias("P_SEP"),
+                    pl.all()
+                )
+                for Δ, 囗 in this_df.filter(pl.col(ctail).eq(this_node)).select([cstart, csize]).iter_rows()
+            ), how="vertical")
+            # .rechunk()
+        )
+        # get full subtrees using cleft and cright (for all); test against equivalent Polars DF
+        db.sql(query2).show(max_rows=50, max_width=5_000)
 
-        assert unit_test_output.select(cs_mini, "user_value1", "user_value2").equals(
-            unit_test_input.pipe(to_flat_from_alist)
-            .pipe(to_full_from_mvp_flat).select(cs_mini, "user_value1", "user_value2").collect()
-        )
+
+    this_df: pl.DataFrame = (
+        pl.read_parquet(example_alist)
+        .rename({"parent": cparent, "child": cchild, "business_key": cbkey})
+    )
+    # show an adjacency list model
+    db.sql(f"""SELECT * FROM this_df;""").show(max_rows=50, max_width=5_000)
+    this_df: pl.DataFrame = (
+        this_df
+        .pipe(from_mALPC)
+        .pipe(expand_model).collect()
+    )
+    # demo pipeline to treat an adjacency list model
+    db.sql(f"""SELECT * FROM this_df;""").show(max_rows=50, max_width=5_000)
