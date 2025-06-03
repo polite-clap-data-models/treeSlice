@@ -296,7 +296,7 @@ def refine_model(ingest: pl.DataFrame | pl.LazyFrame, /) -> pl.LazyFrame:
     return ingest
 
 
-def expand_model(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_all: bool = False, verify: int | None = None) -> pl.LazyFrame:
+def expand_model(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_all: bool = False, verify_first_n: int = 0) -> pl.LazyFrame:
     """
     Computes integer-based boundaries and other metrics for each node in a tree DataFrame.
     In addition to assigning left and right pointers for nested set style queries, this function
@@ -337,8 +337,8 @@ def expand_model(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_all: bool = Fals
     # ↓↓↓ from FLAT to FULL model
     ptr_key_cols: tuple[str, ...] = tuple(sorted(cs.expand_selector(ingest, cs_ptr)))
     assert ptr_key_cols and all(ptr_key_cols) and ptr_key_cols == tuple(cs.expand_selector(ingest, cs_ptr))
-    assert (not verify) or ingest.lazy().select(cs_ptr).head(verify).collect().height == (
-        ingest.lazy().select(cs_ptr).head(verify)
+    assert (not verify_first_n) or ingest.lazy().select(cs_ptr).head(verify_first_n).collect().height == (
+        ingest.lazy().select(cs_ptr).head(verify_first_n)
         .filter(
             ((cs_ptr & cs.first()).shift(1).is_null() & pl.sum_horizontal(cs_ptr.is_not_null()).eq(1)) |
             pl.concat_list(cs_ptr).list.head(pl.sum_horizontal(cs_ptr.is_not_null()).sub(1))
@@ -347,7 +347,7 @@ def expand_model(ingest: pl.DataFrame | pl.LazyFrame, /, *, vis_all: bool = Fals
         .unique(keep="any", maintain_order=False)
         .collect()
         .height
-    ), "The verify parameter is set, but the DataFrame contains identical rows or rows not colocated correctly"
+    ), "The verify_first_n parameter is set, but the DataFrame contains identical rows or rows not colocated correctly"
 
     #
     # Best Measured Performance with default parameters is ≈ 11.3M rows/sec. The system processes 100,000 rows
@@ -628,10 +628,10 @@ if __name__ == "__main__":
 
     # demonstration
 
-    assert pl.read_parquet(example_mvp).pipe(expand_model).collect().shape == (20, 22)
-    assert pl.read_parquet(unit_test_aa_mvp).pipe(expand_model).collect().shape == (52_529, 32)
-    assert pl.read_parquet(unit_test_bb_mvp).pipe(expand_model).collect().shape == (52_419, 32)
-    assert pl.read_parquet(unit_test_cc_mvp).pipe(expand_model).collect().shape == (49_246, 32)
+    assert pl.read_parquet(example_mvp).pipe(expand_model, verify_first_n=10_000).collect().shape == (20, 22)
+    assert pl.read_parquet(unit_test_aa_mvp).pipe(expand_model, verify_first_n=10_000).collect().shape == (52_529, 32)
+    assert pl.read_parquet(unit_test_bb_mvp).pipe(expand_model, verify_first_n=10_000).collect().shape == (52_419, 32)
+    assert pl.read_parquet(unit_test_cc_mvp).pipe(expand_model, verify_first_n=10_000).collect().shape == (49_246, 32)
 
     p_sep = 'parent> <child'
     for this_df, this_node in [

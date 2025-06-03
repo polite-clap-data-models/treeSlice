@@ -522,7 +522,7 @@ if __name__ == "__main__":
     del df_list_of_Nx_int, df_list_of_Nx_str, df_list_of_Nx_float, df_array_of_4xFixed_int, df_JSON_array_of_4xFixed_int, df_JSON_array_of_4xFixed_str, df_JSON_array_of_Nx_JSON_object2, df_list_of_Nx_struct2, df_list_of_Nx_list2, df_list_of_Nx_array2
 
     assert_frame_equal(
-        pl.read_parquet(example_mvp).pipe(expand_model, verify=10_000).collect(),
+        pl.read_parquet(example_mvp).pipe(expand_model, verify_first_n=10_000).collect(),
         # from MVP to FULL model
         pl.DataFrame([
             pl.Series('p000_3', ['A1', 'A1', 'A1', 'A1', 'A1', 'A1', 'A1', 'A2', 'A2', 'A2', 'A2', 'A2', 'A2', 'Z', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y'], dtype=pl.String),
@@ -552,38 +552,38 @@ if __name__ == "__main__":
         check_exact=True, check_row_order=True, check_column_order=True
     )
     assert_frame_equal(
-        pl.read_parquet(example_mvp).pipe(expand_model, verify=10_000).select(~cs.starts_with("user_value")).collect(),
+        pl.read_parquet(example_mvp).pipe(expand_model, verify_first_n=10_000).select(~cs.starts_with("user_value")).collect(),
         # from MVP to FULL model
         pl.read_parquet(example_flat_one_ptr_column_all_nodes)
         .rename({"path-to-root": cptr})
-        .pipe(from_mList).pipe(expand_model, verify=10_000).collect(),
+        .pipe(from_mList).pipe(expand_model, verify_first_n=10_000).collect(),
         # from FLAT to FULL model
         check_exact=True, check_row_order=True, check_column_order=True
     )
     assert_frame_equal(
-        pl.read_parquet(example_mvp).pipe(expand_model, verify=10_000).select(~cs.starts_with("user_value")).collect(),
+        pl.read_parquet(example_mvp).pipe(expand_model, verify_first_n=10_000).select(~cs.starts_with("user_value")).collect(),
         # from MVP to FULL model
         pl.read_parquet(example_flat_one_ptr_column_leaves_only)
         .rename({"path-to-root": cptr})
-        .pipe(from_mList).pipe(refine_model).pipe(expand_model, verify=10_000).collect(),
+        .pipe(from_mList).pipe(refine_model).pipe(expand_model, verify_first_n=10_000).collect(),
         # from FLAT (leaves only example) to FULL model
         check_exact=True, check_row_order=True, check_column_order=True
     )
     assert_frame_equal(
-        pl.read_parquet(example_mvp).pipe(expand_model, verify=10_000).select(~cs.starts_with("user_value")).collect(),
+        pl.read_parquet(example_mvp).pipe(expand_model, verify_first_n=10_000).select(~cs.starts_with("user_value")).collect(),
         # from MVP to FULL model
         pl.read_parquet(example_flat_one_ptr_column_problematic)
         .rename({"path-to-root": cptr})
-        .pipe(from_mList).pipe(refine_model).pipe(expand_model, verify=10_000).collect(),
+        .pipe(from_mList).pipe(refine_model).pipe(expand_model, verify_first_n=10_000).collect(),
         # from FLAT (problematic example) to FULL model
         check_exact=True, check_row_order=True, check_column_order=True
     )
     assert_frame_equal(
-        pl.read_parquet(example_mvp).pipe(expand_model, verify=10_000).collect(),
+        pl.read_parquet(example_mvp).pipe(expand_model, verify_first_n=10_000).collect(),
         # from MVP to FULL model
         pl.read_parquet(example_alist)
         .rename({"parent": cparent, "child": cchild, "business_key": cbkey})
-        .pipe(from_mALPC).pipe(expand_model, verify=10_000).collect(),
+        .pipe(from_mALPC).pipe(expand_model, verify_first_n=10_000).collect(),
         # from ALIST to FULL model
         check_exact=True, check_row_order=True, check_column_order=True
     )
@@ -603,8 +603,8 @@ if __name__ == "__main__":
         (unit_test_bb_mvp, pl.scan_parquet(unit_test_bb_mvp).select(ctail, cdepth)),
         (unit_test_cc_mvp, pl.scan_parquet(unit_test_cc_mvp).select(ctail, cdepth))
     ):
-        print(f"\n\n{mvp_model}\n", lf.pipe(expand_model, verify=10_000).select(~cs_ptr).explain(optimized=True))
-        df: pl.DataFrame = lf.pipe(expand_model, verify=10_000).select(~cs_ptr).collect()
+        print(f"\n\n{mvp_model}\n", lf.pipe(expand_model, verify_first_n=10_000).select(~cs_ptr).explain(optimized=True))
+        df: pl.DataFrame = lf.pipe(expand_model, verify_first_n=10_000).select(~cs_ptr).collect()
         assert_frame_equal(lf.collect(), df.select(ctail, cdepth),
             check_exact=True, check_row_order=True, check_column_order=True
         )
