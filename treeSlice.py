@@ -703,5 +703,8 @@ if __name__ == "__main__":
         .pipe(from_mALPC)
         .pipe(expand_model).collect()
     )
-    # demo pipeline to treat an adjacency list model
+    assert this_df.equals(
+        pl.read_parquet(example_mvp).pipe(expand_model).collect()
+    )
+    # demo pipeline to treat an adjacency list model; test against equivalent MVP Parquet
     db.sql(f"""SELECT * FROM this_df;""").show(max_rows=50, max_width=5_000)
